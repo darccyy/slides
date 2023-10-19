@@ -6,11 +6,13 @@ fn main() {
     let parsed = parse_file(&file);
     // println!("{:#?}", parsed);
 
-    let slides = make_slides(parsed);
+    let width = 100;
+    let slides = make_slides(parsed, width);
     // println!("{:#?}", slides);
 
     for slide in slides {
-        println!("\n--------------------");
+        println!();
+        println!("{}", "-".repeat(width));
         match slide {
             Slide::Title { header } => println!("{}", header),
             Slide::Normal { header, body } => {
@@ -19,7 +21,7 @@ fn main() {
                 println!("{}", body);
             }
         }
-        println!("--------------------\n");
+        println!("{}", "-".repeat(width));
     }
 }
 
@@ -29,7 +31,45 @@ enum Slide {
     Normal { header: String, body: Vec<String> },
 }
 
-fn make_slides(pieces: Vec<Piece>) -> Vec<Slide> {
+fn centered_padding(text: &str, width: usize) -> String {
+    " ".repeat(width.checked_sub(text.chars().count()).unwrap_or(0) / 2)
+}
+
+fn wrap_words(text: &str, width: usize) -> String {
+    let mut result = String::new();
+    let mut current_line = String::new();
+    let mut line_len = 0;
+
+    for word in text.split_whitespace() {
+        let word_len = word.chars().count();
+
+        if line_len + word_len + 1 <= width {
+            if !current_line.is_empty() {
+                current_line.push(' ');
+                line_len += 1;
+            }
+            current_line += word;
+            line_len += word_len;
+        } else {
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            result += &current_line;
+            current_line.clear();
+            current_line += word;
+            line_len = word_len;
+        }
+    }
+
+    if !result.is_empty() {
+        result.push('\n');
+    }
+    result += &current_line;
+
+    result
+}
+
+fn make_slides(pieces: Vec<Piece>, width: usize) -> Vec<Slide> {
     let mut slides: Vec<Slide> = Vec::new();
     let mut current: Option<(String, Vec<String>)> = None;
 
@@ -42,31 +82,37 @@ fn make_slides(pieces: Vec<Piece>) -> Vec<Slide> {
                     slides.push(Slide::Normal { header, body });
                 }
                 current = None;
+                let text = text.join(" ");
+                let padding = centered_padding(&text, width);
                 slides.push(Slide::Title {
-                    header: text.join(" "),
+                    header: format!("{padding}\x1b[1;4m{text}\x1b[0m"),
                 })
             }
             PieceKind::Header { level: 1 } => {
                 if let Some((header, body)) = current {
                     slides.push(Slide::Normal { header, body });
                 }
-                let text = format!("\x1b[1;4m{}\x1b[0m", text.join(" "));
+                let text = text.join(" ");
+                let padding = centered_padding(&text, width);
+                let text = format!("{padding}\x1b[1;4m{text}\x1b[0m");
                 current = Some((text, Vec::new()));
             }
             PieceKind::Header { level: _level } => {
-                let mut text = text
-                    .into_iter()
-                    .map(|line| format!("\n \x1b[2m-- \x1b[0;3m{}\x1b[0;2m --\x1b[0m", line))
-                    .collect();
+                let text = text.join(" ");
+                let padding = centered_padding(&text, width - 6);
+                let text = format!("{padding}\x1b[2m—— \x1b[0;3m{text}\x1b[0;2m ——\x1b[0m");
                 match &mut current {
                     Some((_, body)) => {
-                        body.append(&mut text);
+                        body.push(text);
                     }
-                    None => current = Some((String::new(), text)),
+                    None => current = Some((String::new(), vec![text])),
                 }
             }
             PieceKind::Paragraph => {
-                let mut text = text;
+                let mut text = text
+                    .into_iter()
+                    .map(|line| wrap_words(&line, width))
+                    .collect();
                 match &mut current {
                     Some((_, body)) => {
                         body.append(&mut text);
@@ -98,7 +144,7 @@ fn make_slides(pieces: Vec<Piece>) -> Vec<Slide> {
                     .map(|line| {
                         let space = " ".repeat(longest_line - line.len());
                         format!(
-                            "{color}{padding}{LINE_V}\x1b[0;1m  {line}{space}  {color}{LINE_V}\x1b[0m",
+                            "{color}{padding}{LINE_V}\x1b[0m  {line}{space}  {color}{LINE_V}\x1b[0m",
                         )
                     })
                     .collect();
@@ -120,10 +166,12 @@ fn make_slides(pieces: Vec<Piece>) -> Vec<Slide> {
                 ordered: false,
                 depth,
             } => {
-                let line = text.join(" ");
+                let text = text.join(" ");
                 let indent = "    ".repeat(depth);
                 let symbol = UL_SYMBOLS.get(depth % UL_SYMBOLS.len()).unwrap();
-                let text = format!("  {indent}{symbol} {line}");
+                let new_width = width - indent.len() - 4;
+                let text = wrap_words(&text, new_width).replace("\n", &format!("\n{indent}    "));
+                let text = format!("  \x1b[2m{indent}{symbol}\x1b[0m {text}");
                 match &mut current {
                     Some((_, body)) => {
                         body.push(text);
@@ -135,7 +183,7 @@ fn make_slides(pieces: Vec<Piece>) -> Vec<Slide> {
                 ordered: true,
                 depth,
             } => {
-                let line = text.join(" ");
+                let text = text.join(" ");
                 let indent = "    ".repeat(depth);
                 let number_int = match ordered_item_indexes.get(depth) {
                     Some(number) => number + 1,
@@ -145,7 +193,11 @@ fn make_slides(pieces: Vec<Piece>) -> Vec<Slide> {
                     }
                 };
                 let number = format_number(number_int, depth);
-                let text = format!("  \x1b[2m{indent}{number}.\x1b[0m {line}");
+                let number_width = number.len() + 4;
+                let new_width = width - indent.len() - number_width;
+                let text = wrap_words(&text, new_width)
+                    .replace("\n", &format!("\n{indent}{}", " ".repeat(number_width)));
+                let text = format!("  \x1b[2m{indent}{number}.\x1b[0m {text}");
                 match &mut current {
                     Some((_, body)) => {
                         body.push(text);
